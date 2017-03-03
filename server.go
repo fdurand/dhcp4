@@ -2,11 +2,18 @@ package dhcp4
 
 import (
 	"net"
-	"strconv"
 )
 
+type Answer struct {
+	D     Packet
+	IP    net.IP
+	MAC   net.HardwareAddr
+	Iface *net.Interface
+	SrcIP net.IP
+}
+
 type Handler interface {
-	ServeDHCP(req Packet, msgType MessageType, options Options) Packet
+	ServeDHCP(req Packet, msgType MessageType, options Options) Answer
 }
 
 // ServeConn is the bare minimum connection functions required by Serve()
@@ -31,9 +38,11 @@ type ServeConn interface {
 // interface that the request was received from.  Writing a custom ServeConn,
 // or using ServeIf() can provide a workaround to this problem.
 func Serve(conn ServeConn, handler Handler) error {
+
+	var ans Answer
 	buffer := make([]byte, 1500)
 	for {
-		n, addr, err := conn.ReadFrom(buffer)
+		n, _, err := conn.ReadFrom(buffer)
 		if err != nil {
 			return err
 		}
@@ -54,20 +63,10 @@ func Serve(conn ServeConn, handler Handler) error {
 				continue
 			}
 		}
-		if res := handler.ServeDHCP(req, reqType, options); res != nil {
-			// If IP not available, broadcast
-			ipStr, portStr, err := net.SplitHostPort(addr.String())
-			if err != nil {
-				return err
-			}
-
-			if net.ParseIP(ipStr).Equal(net.IPv4zero) || req.Broadcast() {
-				port, _ := strconv.Atoi(portStr)
-				addr = &net.UDPAddr{IP: net.IPv4bcast, Port: port}
-			}
-			if _, e := conn.WriteTo(res, addr); e != nil {
-				return e
-			}
+		if ans = handler.ServeDHCP(req, reqType, options); ans.D != nil {
+			client, _ := NewRawClient(ans.Iface)
+			client.sendDHCP(ans.MAC, ans.D, ans.IP, ans.SrcIP)
+			client.Close()
 		}
 	}
 }
